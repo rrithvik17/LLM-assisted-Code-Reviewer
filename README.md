@@ -62,7 +62,7 @@ cd frontend streamlit run app.py
 
 ---
 
-##🧪 Example Usage
+## Example Usage
 Input code:
 def add(a, b): return a + b
 print(add("4", 5))
@@ -72,25 +72,24 @@ Issue detected: Type mismatch between string and integer
 
 Explanation of why the error occurs
 Automatically generated corrected code
+
 ---
 
-##📌 Why This Project Matters
+## Why This Project Matters
 Demonstrates real-world usage of LLMs in software engineering
 Shows how to integrate LLMs into full-stack applications
 Handles unreliable LLM outputs gracefully
 Fully local, privacy-friendly, and cost-free
 Highly relevant for Software Engineering, ML, and AI roles
 
-
 ---
 
-##🔮 Future Improvements
+## Future Improvements
 Multi-language support (JavaScript, Java)
 Diff view (before vs after code)
 Line-level error highlighting
 Model selection support
 Deployment as a hosted web service
-
 
 
 VS Code extension
