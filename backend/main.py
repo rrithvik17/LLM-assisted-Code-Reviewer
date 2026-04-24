@@ -1,13 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import ast, uuid, httpx, re
+import ast, httpx, re, os
 
-app = FastAPI(title="LLM Code Reviewer - Stable for CodeLlama 7B")
+app = FastAPI(title="LLM Code Reviewer - Stable & Secure")
+
+# Configuration (In production, use environment variables)
+LLM_URL = os.getenv("LLM_URL", "http://localhost:11434/api/generate")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"]
 )
@@ -21,51 +25,53 @@ class ReviewRequest(BaseModel):
 # -----------------------------
 def static_check(code):
     errors = []
-
-    # Syntax errors
     try:
-        ast.parse(code)
+        # Use a single parse call for efficiency
+        tree = ast.parse(code)
     except SyntaxError as e:
         errors.append(f"Syntax Error: {e.msg} at line {e.lineno}")
         return errors
-
-    tree = ast.parse(code)
 
     # Detect common mistakes
     for node in ast.walk(tree):
 
         # Division by zero
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)):
             if isinstance(node.right, ast.Constant) and node.right.value == 0:
                 errors.append("Division by zero detected")
 
-        # Type mismatch: string + integer
+        # Type mismatch: string + non-string (improved logic)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             if isinstance(node.left, ast.Constant) and isinstance(node.right, ast.Constant):
-                if type(node.left.value) != type(node.right.value):
-                    errors.append("Adding string + integer causes TypeError")
+                l_val, r_val = node.left.value, node.right.value
+                # Flag string + non-string additions
+                if isinstance(l_val, str) != isinstance(r_val, str):
+                    errors.append("Adding string and non-string types causes TypeError")
 
     return errors
 
 
 # -----------------------------
-# CALL CODELLAMA LLM
+# CALL LLAMA LLM
 # -----------------------------
 async def call_llm(prompt):
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(
-                "http://localhost:11434/api/generate",
+                LLM_URL,
                 json={
-                    "model": "codellama:7b",
+                    "model": "llama3.2:latest",
                     "prompt": prompt,
                     "stream": False
                 },
-                timeout=300
+                timeout=60  # Reduced timeout for responsiveness
             )
+            r.raise_for_status()
             return r.json().get("response", "")
+    except httpx.HTTPError as e:
+        return f"LLM ERROR: API connection failed ({str(e)})"
     except Exception as e:
-        return f"LLM ERROR: {str(e)}"
+        return f"LLM ERROR: Unexpected error ({str(e)})"
 
 
 # -----------------------------
@@ -79,72 +85,75 @@ async def review(req: ReviewRequest):
     # Step 1: Static error scan
     static_errors = static_check(code)
 
-    # Step 2: Ask LLM to review code in plain text format
+    # Step 2: Ask LLM to review code
     prompt = f"""
-You are an expert Python code reviewer.
+You are a highly experienced Python code reviewer.
 
-Respond EXACTLY in this format (plain text, no JSON):
+================ CORE RULE =================
+ONLY report REAL ERRORS.
+DO NOT report: Style improvements, Naming suggestions, Alternative approaches, or Subjective opinions.
 
+================ WHAT COUNTS AS AN ISSUE =================
+ONLY include: Syntax errors, Runtime errors, Logical bugs, and Incorrect outputs.
+If code is logically correct → it MUST be marked as correct.
+
+================ OUTPUT FORMAT (PLAIN TEXT) =================
 ISSUES:
-- issue 1
-- issue 2
-(Write "none" if no issues)
+- If real bugs exist → list them
+- If NO real bugs → write EXACTLY: NONE
 
 EXPLANATION:
-Detailed explanation here.
+- Explain what the code does
+- Clearly state if it is correct
 
 IMPROVED_CODE:
-<corrected full code>
+- If incorrect → fix it
+- If correct → return SAME code
 
-Code:
+CODE TO REVIEW:
 {code}
 """
 
     llm_output = await call_llm(prompt)
     text = llm_output.strip()
 
-    # -------- CASE 1: LLM SAYS "none" FOR ISSUES → CODE IS CORRECT --------
-    try:
-        issues_section = text.lower().split("issues:")[1].split("explanation:")[0].strip()
-    except:
-        issues_section = ""
+    # SECTION EXTRACTION HELPER
+    def extract_section(label, content, next_label=None):
+        pattern = rf"{label}:(.*?)(?={next_label}:|$)" if next_label else rf"{label}:(.*)"
+        match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
+        if not match: return ""
+        
+        extracted = match.group(1).strip()
+        # Robustly strip markdown blocks for improved_code
+        if label.upper() == "IMPROVED_CODE":
+            # Match ```[lang] ... ``` and take the content inside
+            code_match = re.search(r"```(?:[a-zA-Z]*\n)?(.*?)```", extracted, re.DOTALL)
+            if code_match:
+                extracted = code_match.group(1).strip()
+            else:
+                extracted = extracted.strip("`").strip()
+        return extracted
 
-    if "none" in issues_section or "no issues" in issues_section:
-        return {
-            "correct": True,
-            "issues": [],
-            "explanation": text,
-            "improved_code": code
-        }
-
-    # -------- EXTRACT SECTIONS SAFELY --------
-    issues_match = re.search(r"ISSUES:(.*?)(EXPLANATION:)", text, re.DOTALL | re.IGNORECASE)
-    explanation_match = re.search(r"EXPLANATION:(.*?)(IMPROVED_CODE:)", text, re.DOTALL | re.IGNORECASE)
-    improved_match = re.search(r"IMPROVED_CODE:(.*)", text, re.DOTALL | re.IGNORECASE)
-
-    issues_text = issues_match.group(1).strip() if issues_match else "Could not extract issues."
-    explanation_text = explanation_match.group(1).strip() if explanation_match else text
-    improved_code = improved_match.group(1).strip() if improved_match else code
+    issues_text = extract_section("ISSUES", text, "EXPLANATION")
+    explanation_text = extract_section("EXPLANATION", text, "IMPROVED_CODE")
+    improved_code = extract_section("IMPROVED_CODE", text)
 
     # -------- MERGE STATIC ERRORS + LLM DISCOVERED ISSUES --------
-    issues_list = []
+    issues_list = static_errors.copy()
 
-    # Static errors first (most reliable)
-    if static_errors:
-        issues_list.extend(static_errors)
-
-    # Add LLM issues
-    if "none" not in issues_text.lower():
-        for line in issues_text.split("\n"):
-            clean = line.strip("-• ").strip()
-            if clean:
-                issues_list.append(clean)
-
-    correct = len(issues_list) == 0
+    # Add LLM issues (with more robust filtering)
+    if issues_text:
+        lowercase_issues = issues_text.lower()
+        skip_phrases = ["none", "no issues", "no problems", "no errors", "nothing found"]
+        if not any(p in lowercase_issues for p in skip_phrases):
+            for line in issues_text.split("\n"):
+                clean = line.strip("-• 123456789. ").strip()
+                if clean:
+                    issues_list.append(clean)
 
     return {
-        "correct": correct,
+        "correct": len(issues_list) == 0,
         "issues": issues_list,
-        "explanation": explanation_text,
-        "improved_code": improved_code
+        "explanation": explanation_text or (text if not issues_list else "No explanation generated."),
+        "improved_code": improved_code or code
     }
