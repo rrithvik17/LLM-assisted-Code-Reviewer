@@ -52,4 +52,43 @@ Built with a focus on **accuracy, UX, and real-world usability**, this project c
 
 ---
 
-## 🧩 Architecture
+## Architecture
+Frontend (React + Tailwind)
+        ↓
+Backend (FastAPI)
+        ↓
+Static Analysis + LLM (Ollama)
+
+## Setup Instructions
+
+### 1️⃣ Clone the repository
+```bash
+git clone https://github.com/YOUR_USERNAME/LLM-assisted-Code-Reviewer.git
+cd LLM-assisted-Code-Reviewer
+```
+### 2️⃣ Backend Setup
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate   # Windows
+pip install fastapi uvicorn httpx
+```
+
+### 3️⃣ Install Ollama + Model
+Install Ollama → https://ollama.com
+Then run:
+```bash
+ollama pull llama3.2
+```
+
+### 4️⃣ Run Backend
+```bash
+uvicorn main:app --reload --port 8000
+```
+
+### 5️⃣ Frontend Setup
+```bash
+cd web-ui
+npm install
+npm run dev
+```
